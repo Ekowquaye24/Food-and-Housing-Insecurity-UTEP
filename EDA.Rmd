@@ -1,0 +1,376 @@
+---
+title: "Modeling Food and Housing Insecurity at UTEP - Phase 1"
+author:
+- George E. Quaye
+- John Koomson
+- Willliam O. Agyapong
+date: \center University of Texas, El Paso (UTEP)\center \center Department of Mathematical
+  Sciences \center
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+  bookdown::pdf_document2:
+    fig_caption: yes
+    keep_tex: no
+    latex_engine: pdflatex
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+  html_document:
+    fig_caption: yes
+    keep_tex: no
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+subtitle: Data Exploration
+affiliation: Department of Mathematical Sciences, University of Texas at El Paso
+header-includes:
+- \usepackage{float}
+- \usepackage{setspace}
+- \doublespacing
+- \usepackage{bm}
+- \usepackage{amsmath}
+- \usepackage{amssymb}
+- \usepackage{amsfonts}
+- \usepackage{amsthm}
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhf{}
+- \rhead{George Quaye, Johnson Koomson, William Agyapong}
+- \lhead{Modeling - DS 6335}
+- \cfoot{\thepage}
+- \usepackage{algorithm}
+- \usepackage[noend]{algpseudocode}
+geometry: margin = 0.8in
+fontsize: 10pt
+bibliography: references.bib
+link-citations: yes
+linkcolor: blue
+csl: apa-6th-edition-no-ampersand.csl
+nocite: null
+---
+\end{center}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+# Load required packages
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(RColorBrewer)
+library(ggcorrplot) # for correlation plot
+library(ggthemes)
+library(patchwork)
+library(knitr)
+library(kableExtra)
+library(scales) # for the percent function
+```
+
+
+
+```{r load-data}
+# Importing preprocessed data
+load("FIHI_clean.RData")
+
+# Make new data for EDA
+eda_dat <- FIHI_sub3 %>%
+  dplyr::select(-respondent_id)
+
+```
+
+# Exploratory Data Analysis
+
+## Summary Statistics
+```{r, summary-stats}
+
+# Tracking follow-up questions to fix incorrect missing data instances:
+# Problem: Respondents who gave a response not in favor of the follow-up 
+# question will incorrectly count as missing data for the follow-up questions
+# - employment_type (Q3): filter out NO for employed
+# - weekly_work_hrs (Q4): filter out NO for employed
+# - transport_reliability (Q13): filter out Not applicable for mode_transport
+# Problem with Q13 though, the same number carried over from Q12 instead of 
+# falling short of Not applicable respondents
+# - 
+# - spent_night_elsewhere (Q22): filter out 'Yes' for permanent address
+# - 
+
+summ_stats <- data.frame() # initialize summary statistics container
+nc <- NCOL(eda_dat)
+var_name <- variable.names(eda_dat)
+nr_vec <- vector(length = nc) # a vector of number of rows for the summary df of 
+# each variable to aid in creating a striped formatted table.
+
+# Key-value pairs matching follow-up question variables to their main questions
+main_var <- c("employment_type"="employment", "weekly_work_hrs"="employment", "transport_reliability"="mode_transport", "spent_night_elsewhere"="permanent_address")
+# Key-value pairs matching follow-up question variables to tokens for filtering the true sample sizes
+filter_token <- c("employment_type"="No", "weekly_work_hrs"="No", "transport_reliability"="Not applicable", "spent_night_elsewhere"="Yes")
+
+for (i in 1:nc) {
+
+  # Computing the summary statistics for the ith variable
+  if(var_name[i] %in% names(main_var)) {
+    # Get summary stats for variables from follow-up survey questions.
+    # This part is necessary to account for the true sample sizes and the true
+    # missing values for such variables.
+    summ <- eda_dat %>% 
+              filter(!!as.name(main_var[var_name[i]]) != filter_token[var_name[i]]) %>%
+              select(!!as.name(var_name[i]))%>%
+              group_by(!!as.name(var_name[i])) %>%
+              summarise(freq = n()) %>%
+              mutate(pct = freq/sum(freq),
+                     pct = percent(pct, 0.01))
+  } else {
+    # Get summary stats for variables from main survey questions
+    summ <- eda_dat %>% select(!!as.name(var_name[i]))%>%
+              group_by(!!as.name(var_name[i])) %>%
+              summarise(freq = n()) %>%
+              mutate(pct = freq/sum(freq),
+                     pct = percent(pct, 0.01))
+  }
+  
+  # Add extra column indicating the particular variable for which the summary was generated
+  var_col <- c(var_name[i], rep("", (NROW(summ)-1))) 
+  summ <- cbind(var_col, summ) 
+  
+  # Renaming the columns
+  names(summ) <- c("Variable", "Levels", "Obervations", "Percentage")
+  
+  # Storing summary statistics for each variable
+  summ_stats <- rbind(summ_stats, summ)
+  nr_vec[i] <-  length(var_col) # store the number of rows for each variable in the df.
+}
+
+# To help highlight each variable information as a block
+get_stripe_index <- function(indices)
+{
+  index_vec <- NULL
+ 
+  for(i in seq_along(indices)) {
+    
+    if(i%%2 == 0) next # skip the even values
+    
+    end_index <- sum(indices[1:i])
+    
+    start_index <- end_index - (indices[i]-1)
+    
+    index_vec <- c(index_vec, start_index:end_index)
+    
+  }
+  return(index_vec)
+}
+
+kable(summ_stats, align = "llll", longtable=T, booktabs=T, linesep="",
+      caption = " A summary of variables of interest") %>%
+  kable_paper("hover", full_width = F)%>%
+  kable_styling(font_size = 9, 
+                latex_options = c("HOLD_position", "striped", "repeat_header"),
+                stripe_index = get_stripe_index(nr_vec)
+                )
+ 
+```
+
+
+## Visualizing Missing Data 
+```{r}
+# install.packages("naniar")
+# install.packages("UpSetR")
+library(naniar)
+library(UpSetR)
+
+# explore the patterns
+gg_miss_upset(FIHI_sub3)
+
+# explore missingness in variables with gg_miss_var
+miss_var_summary(FIHI_sub3) %>% kable()
+
+gg_miss_var(FIHI_sub3) + ylab("Number of missing values")
+
+gg_miss_var(FIHI_sub3, show_pct = T) 
+```
+
+
+```{r plotting-functions}
+# # Make data for plotting
+# na_to_missing <- function(x) 
+# {
+#   return(ifelse(is.na(x), 'Missing', x ))
+# }
+# 
+# FIHI_sub4 <- FIHI_sub3[, -1] %>% 
+#   mutate(across(everything(), na_to_missing))
+#   
+
+# For creating bar graphs of the response variables
+mybarplot <- function(var, palette="Set2",
+                      xlab="", ylab="",title="",data='') 
+{
+  # palette=c("Set2","Set3","Accent","Set1","Paired","Dark2")
+  ylab = ifelse(ylab=="", "Number of Respondents", ylab)
+  
+  if(!(class(data) %in% c('data.frame','tbl','tbl_df'))) data <- FIHI_sub3
+
+   if(ncol(data) == 4)
+   {
+     # A plotting data was provided
+     plotdf <- data
+   } else {
+     # prepare data frame for plotting
+      plotdf <- data %>%
+      group_by({{ var }}) %>%
+      summarise(n=n()) %>%
+      mutate(pct = n/sum(n),
+             lbl = percent(pct)) 
+   }
+    
+  # create the plot
+  return(
+    ggplot(plotdf, aes({{ var }},n, fill={{ var }})) +
+    geom_bar(stat = "identity",position = "dodge")  +
+    geom_text(aes(label = n), size=3, position = position_stack(vjust = 0.5)) +
+    scale_fill_brewer(palette=palette) +
+    labs(x=xlab, y=ylab, title=title) +
+    theme_classic() +
+    theme(legend.position = "none")
+  )
+}
+# "Ever hungry but didn't eat?"
+# mybarplot(FI_q31)
+# mybarplot(spent_night_elsewhere, data = FIHI_sub3)
+
+```
+
+
+## Distribution of Housing Insecurity Responses
+
+```{r}
+
+# Permanent Address
+p1 <- mybarplot(permanent_address, 
+                xlab = "Had permanent address in the past 12 months?"
+                )
+
+# Spending night elsewhere
+plotdf <- FIHI_sub3 %>%
+  filter(permanent_address=='No') %>%
+  group_by(spent_night_elsewhere) %>%
+  summarise(n=n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = percent(pct))
+p2 <- mybarplot(spent_night_elsewhere, 
+                xlab = "How fequently did you spend the night elsewhere?",
+                data = plotdf
+                )
+plotdf %>% mutate(spent_night_elsewhere = ifelse(is.na(spent_night_elsewhere), 'Missing', spent_night_elsewhere))
+# Display plots side by side with the help of the patchwork package
+p1 + p2
+
+```
+
+## Distribution of Food Insecurity Responses
+```{r}
+
+# Q26: Food bought didn't last
+p1 <- mybarplot(FI_q26, xlab = "Food bought did not last")
+
+# Q27: Balanced diet
+p2 <- mybarplot(FI_q27, xlab = "Couldn't afford balanced meals")
+
+# Q28: 
+p3 <- mybarplot(FI_q28, xlab = "Ever cut the size of meals?")
+
+# Q3: 
+p4 <- mybarplot(FI_q30, xlab = "Ever ate less than you should?")
+
+# Q31
+p5 <- mybarplot(FI_q31, xlab = "Ever got hungry but didn't eat?")
+
+# Display plots side by side with the help of the patchwork package
+(p1 + p2)
+
+(p3 + p4)
+
+p5
+
+```
+
+
+##  Association between predictors and responses.
+
+```{r warning=F, message=F, echo=F, eval=F}
+plotdf <- FIHI_sub3 %>%
+  group_by(gender, permanent_address) %>%
+  summarise(n=n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = percent(pct))
+
+p1 <- ggplot(plotdf, aes(gender, pct, fill=permanent_address)) + 
+  geom_bar(stat = "identity",position = "fill") +
+  scale_y_continuous(breaks = seq(0,1,0.2), label=percent) +
+  geom_text(aes(label = lbl), size=3, position = position_stack(vjust = 0.5)) +
+  scale_fill_brewer(palette="Set2") + 
+  labs(x="Gender",y="Percent of respondents", fill="Permanent Address") +
+  theme_classic() +
+  theme(legend.position = "none")
+
+# display plots in a grid layout
+(p1 + p2) / (p3 + p4 + p5)
+```
+
+
+```{r}
+# library(VIM)
+# aggr_plot <- aggr(data, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(data), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+
+
+# Data Science Best Practices Adopted
+
+
+We sought to improve upon our initial work from the first phase of the project by incorporating three key practices in terms of data science ethics and  processes that we have learned from the Data Science Collaboration course and beyond. The three practices we focused on include programming most aspects of the project, ensuring reproducibility of our entire work, and improvements to the communication of our results. It is interesting to note that due to the shared conviction of all members of the group to always uphold best practices right from the beginning of any data science project they set forth to emback on, you would find out that most of the  practices we talk about here, especially the programming and reproducibility, carry over directly from phase I of the project. The next subsections discuss each one of these practices in details.
+
+
+## Programming or Process Automation
+
+We programmed and automated various aspects of our project in order to aid reproducibility, allow for convenient extension of the project to future survey data , and to help avoid common errors associated with manual data processing. Here, we highlight what we did and how we went about with their implementations.
+
+### Data Cleaning
+
+* From the very beginning of our data processing, instead of manually specifying the file or directory paths, we used R codes to dynamically determine the paths to prevent our files reading codes from breaking down on other people's computer platforms. This helped with our collaboration on github by giving each member the convenience to clone the github repository of the project and start running the codes without having to change any file paths. To achieve this, we used the `rstudioapi::getSourceEditorContext` function to get the file path and extracted the directory name with the help of the `dirname` function.
+
+* **A program to remove unwanted parts of variable names**
+One will notice that the original variable names from the excel data file included the actual survey questions which does not make it easy for reading and processing. Instead of manually editing the names in the excel file, we used regular expressions with the help of the R pattern matching and replacement function `gsub` to automatically strip off the redundant character strings in the original variable names to facilitate the initial stages of our data cleaning. At this stage we needed just the question number part of the variable names so we took  advantage of the fact that each question number ended with two dots. The regular expression pattern used is `"\\..*"`, which ...
+
+* We also created a program to track variables that were part multiple response survey questions. For example, because multiple responses were enabled for ethnicity on the survey, the dataset provided to us had separate columns for the each level of ethnicity. The goal then was to consolidate the individual parts belonging to the same survey question into one variable. We first created a count variable to record the total number of **non-na** responses for each question.  We  then used two helper functions we created called `na_to_zero` and `zero_to_na` to convert all the **NA's** to zeros, and to restore the **NA's** in the end, respectively. 
+
+### EDA
+
+The exploratory data analysis section also received a lot of programming. Functions were written to create graphs and summary statistics tables. One area we want to talk about is where we wrote R codes to dynamically alternate the background colors of table rows to make it easy to read all the records pertaining to a particular variable in **Table 2** of the report. Instead of manually specifying the row indexes in the *stripe_index* argument of `kable` function to show where the records for a variable begins and ends, we did this programmatically by creating a `get_stripe_index` function.
+
+
+
+## Reproducibility
+
+- Github for version control
+- Rmarkdown
+- R package manager
+
+### Version control
+
+In this work, we used Github as the version control to ensure reproducibility and collaboration by team members. Version or source control is the practice of tracking and managing changes to projects. These version controls help teams to keep track and modify their code in a special kind of database. This ensures effective collaboration of team members since teams can track back and compare earlier versions of code. By using version control, we were able to document a complete history of every file and code. These changes include the creation and deleting of files and editing of codes. In addition, team members can branch and merge. For example, to ensure faster completion of the project, we worked independently on “branches” and merged our files together after completion. 
+
+
+## Communication
+
+ - Flipping the paradigm
+
+
+
+
+
+
+
+
